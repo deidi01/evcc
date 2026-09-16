@@ -9,7 +9,6 @@ import (
 	"github.com/evcc-io/evcc/api/implement"
 	ocpp2pkg "github.com/evcc-io/evcc/charger/ocpp2"
 	"github.com/evcc-io/evcc/util"
-	"github.com/evcc-io/evcc/util/sponsor"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/availability"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/types"
 )
@@ -53,9 +52,9 @@ func NewKebaOCPP2FromConfig(ctx context.Context, other map[string]any) (api.Char
 }
 
 func NewKebaOCPP2(ctx context.Context, e embed, stationID string, evseID int, idTag string, hasMeter bool) (*KebaOCPP2, error) {
-	if !sponsor.IsAuthorized() {
-		return nil, api.ErrSponsorRequired
-	}
+	//	if !sponsor.IsAuthorized() {
+	//		return nil, api.ErrSponsorRequired
+	//	}
 
 	log := util.NewLogger("keba-ocpp2")
 
