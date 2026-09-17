@@ -21,11 +21,17 @@ import (
 // ── Konfiguration ─────────────────────────────────────────────────────────────
 
 const (
-	csmsURL   = "ws://127.0.0.1:8888"
+	csmsURL = "ws://127.0.0.1:8888"
 	stationID = "SIM001"
 	evseID    = 1
 	connID    = 1
 )
+
+// Bekannte RFID-Test-Tokens
+var rfidTokens = map[string]string{
+	"1": "RFID-TEST-001",
+	"2": "RFID-TEST-002",
+}
 
 // ── Simulator-State ───────────────────────────────────────────────────────────
 
@@ -34,10 +40,11 @@ type Simulator struct {
 	mu          sync.Mutex
 	txnID       string
 	seqNo       int
-	power       float64 // aktuell geladene Leistung in W
-	maxCurrent  float64 // vom CSMS gesetztes Limit in A
+	power       float64
+	maxCurrent  float64
 	charging    bool
-	meterEnergy float64 // Wh gesamt
+	meterEnergy float64
+	lastToken   string // letzter autorisierter Token
 }
 
 func (s *Simulator) nextSeq() int {
@@ -45,15 +52,13 @@ func (s *Simulator) nextSeq() int {
 	return s.seqNo
 }
 
-// ── Handler-Implementierungen (CSMS → Simulator) ─────────────────────────────
+// ── Handler (CSMS → Simulator) ────────────────────────────────────────────────
 
-// availability.ChargingStationHandler
 func (s *Simulator) OnChangeAvailability(req *availability.ChangeAvailabilityRequest) (*availability.ChangeAvailabilityResponse, error) {
 	log.Printf("← ChangeAvailability: status=%s", req.OperationalStatus)
 	return availability.NewChangeAvailabilityResponse(availability.ChangeAvailabilityStatusAccepted), nil
 }
 
-// remotecontrol.ChargingStationHandler
 func (s *Simulator) OnRequestStartTransaction(req *remotecontrol.RequestStartTransactionRequest) (*remotecontrol.RequestStartTransactionResponse, error) {
 	log.Printf("← RequestStartTransaction: idToken=%s", req.IDToken.IdToken)
 	go s.startTransaction(req.IDToken.IdToken)
@@ -84,16 +89,15 @@ func (s *Simulator) OnUnlockConnector(req *remotecontrol.UnlockConnectorRequest)
 	return remotecontrol.NewUnlockConnectorResponse(remotecontrol.UnlockStatusUnlocked), nil
 }
 
-// smartcharging.ChargingStationHandler
 func (s *Simulator) OnSetChargingProfile(req *smartcharging.SetChargingProfileRequest) (*smartcharging.SetChargingProfileResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if req.ChargingProfile != nil && len(req.ChargingProfile.ChargingSchedule) > 0 {
 		schedule := req.ChargingProfile.ChargingSchedule[0]
 		if len(schedule.ChargingSchedulePeriod) > 0 {
 			limit := schedule.ChargingSchedulePeriod[0].Limit
 			s.maxCurrent = limit
+			s.power = limit * 230 * 3
 			log.Printf("← SetChargingProfile: ✅ Neues Limit: %.1f A (%.0f W bei 230V 3-phasig)",
 				limit, limit*230*3)
 		}
@@ -104,7 +108,7 @@ func (s *Simulator) OnSetChargingProfile(req *smartcharging.SetChargingProfileRe
 func (s *Simulator) OnClearChargingProfile(req *smartcharging.ClearChargingProfileRequest) (*smartcharging.ClearChargingProfileResponse, error) {
 	log.Printf("← ClearChargingProfile")
 	s.mu.Lock()
-	s.maxCurrent = 16 // Default zurück
+	s.maxCurrent = 16
 	s.mu.Unlock()
 	return &smartcharging.ClearChargingProfileResponse{Status: smartcharging.ClearChargingProfileStatusAccepted}, nil
 }
@@ -112,34 +116,31 @@ func (s *Simulator) OnClearChargingProfile(req *smartcharging.ClearChargingProfi
 func (s *Simulator) OnGetCompositeSchedule(req *smartcharging.GetCompositeScheduleRequest) (*smartcharging.GetCompositeScheduleResponse, error) {
 	log.Printf("← GetCompositeSchedule: evse=%d duration=%d", req.EvseID, req.Duration)
 	return &smartcharging.GetCompositeScheduleResponse{
-		Status: smartcharging.GetCompositeScheduleStatusAccepted, // ← korrigiert
+		Status: smartcharging.GetCompositeScheduleStatusAccepted,
 	}, nil
 }
 
 func (s *Simulator) OnGetChargingProfiles(req *smartcharging.GetChargingProfilesRequest) (*smartcharging.GetChargingProfilesResponse, error) {
 	log.Printf("← GetChargingProfiles")
-	return &smartcharging.GetChargingProfilesResponse{Status: smartcharging.GetChargingProfileStatusNoProfiles}, nil
+	return &smartcharging.GetChargingProfilesResponse{
+		Status: smartcharging.GetChargingProfileStatusNoProfiles,
+	}, nil
 }
 
-// provisioning.ChargingStationHandler
 func (s *Simulator) OnGetBaseReport(req *provisioning.GetBaseReportRequest) (*provisioning.GetBaseReportResponse, error) {
-	log.Printf("← GetBaseReport: requestId=%d", req.RequestID) // ← RequestID
+	log.Printf("← GetBaseReport: requestId=%d", req.RequestID)
 	return &provisioning.GetBaseReportResponse{
-		Status: types.GenericDeviceModelStatusAccepted, // ← types.!
+		Status: types.GenericDeviceModelStatusAccepted,
 	}, nil
 }
 
 func (s *Simulator) OnGetReport(req *provisioning.GetReportRequest) (*provisioning.GetReportResponse, error) {
-	log.Printf("← GetReport")
-	return &provisioning.GetReportResponse{
-		Status: types.GenericDeviceModelStatusAccepted, // ← types.!
-	}, nil
+	return &provisioning.GetReportResponse{Status: types.GenericDeviceModelStatusAccepted}, nil
 }
 
 func (s *Simulator) OnGetVariables(req *provisioning.GetVariablesRequest) (*provisioning.GetVariablesResponse, error) {
-	log.Printf("← GetVariables: %d Variablen angefragt", len(req.GetVariableData)) // ← GetVariableData
 	results := make([]provisioning.GetVariableResult, len(req.GetVariableData))
-	for i, v := range req.GetVariableData { // ← GetVariableData
+	for i, v := range req.GetVariableData {
 		results[i] = provisioning.GetVariableResult{
 			AttributeStatus: provisioning.GetVariableStatusUnknownVariable,
 			Component:       v.Component,
@@ -150,7 +151,6 @@ func (s *Simulator) OnGetVariables(req *provisioning.GetVariablesRequest) (*prov
 }
 
 func (s *Simulator) OnSetVariables(req *provisioning.SetVariablesRequest) (*provisioning.SetVariablesResponse, error) {
-	log.Printf("← SetVariables: %d Variablen", len(req.SetVariableData))
 	results := make([]provisioning.SetVariableResult, len(req.SetVariableData))
 	for i, v := range req.SetVariableData {
 		results[i] = provisioning.SetVariableResult{
@@ -163,7 +163,6 @@ func (s *Simulator) OnSetVariables(req *provisioning.SetVariablesRequest) (*prov
 }
 
 func (s *Simulator) OnSetNetworkProfile(req *provisioning.SetNetworkProfileRequest) (*provisioning.SetNetworkProfileResponse, error) {
-	log.Printf("← SetNetworkProfile")
 	return &provisioning.SetNetworkProfileResponse{Status: provisioning.SetNetworkProfileStatusAccepted}, nil
 }
 
@@ -172,7 +171,6 @@ func (s *Simulator) OnReset(req *provisioning.ResetRequest) (*provisioning.Reset
 	return &provisioning.ResetResponse{Status: provisioning.ResetStatusAccepted}, nil
 }
 
-// diagnostics.ChargingStationHandler (minimal)
 func (s *Simulator) OnClearVariableMonitoring(req *diagnostics.ClearVariableMonitoringRequest) (*diagnostics.ClearVariableMonitoringResponse, error) {
 	return &diagnostics.ClearVariableMonitoringResponse{}, nil
 }
@@ -182,23 +180,14 @@ func (s *Simulator) OnCustomerInformation(req *diagnostics.CustomerInformationRe
 func (s *Simulator) OnGetLog(req *diagnostics.GetLogRequest) (*diagnostics.GetLogResponse, error) {
 	return &diagnostics.GetLogResponse{Status: diagnostics.LogStatusAccepted}, nil
 }
-
-// diagnostics Handler
 func (s *Simulator) OnGetMonitoringReport(req *diagnostics.GetMonitoringReportRequest) (*diagnostics.GetMonitoringReportResponse, error) {
-	return &diagnostics.GetMonitoringReportResponse{
-		Status: types.GenericDeviceModelStatusAccepted, // ← types.!
-	}, nil
+	return &diagnostics.GetMonitoringReportResponse{Status: types.GenericDeviceModelStatusAccepted}, nil
 }
 func (s *Simulator) OnSetMonitoringBase(req *diagnostics.SetMonitoringBaseRequest) (*diagnostics.SetMonitoringBaseResponse, error) {
-	return &diagnostics.SetMonitoringBaseResponse{
-		Status: types.GenericDeviceModelStatusAccepted, // ← types.!
-	}, nil
+	return &diagnostics.SetMonitoringBaseResponse{Status: types.GenericDeviceModelStatusAccepted}, nil
 }
-
 func (s *Simulator) OnSetMonitoringLevel(req *diagnostics.SetMonitoringLevelRequest) (*diagnostics.SetMonitoringLevelResponse, error) {
-	return &diagnostics.SetMonitoringLevelResponse{
-		Status: types.GenericDeviceModelStatusAccepted, // ← war: GenericStatusAccepted
-	}, nil
+	return &diagnostics.SetMonitoringLevelResponse{Status: types.GenericDeviceModelStatusAccepted}, nil
 }
 func (s *Simulator) OnSetVariableMonitoring(req *diagnostics.SetVariableMonitoringRequest) (*diagnostics.SetVariableMonitoringResponse, error) {
 	return &diagnostics.SetVariableMonitoringResponse{}, nil
@@ -220,6 +209,27 @@ func (s *Simulator) sendStatusNotification(status availability.ConnectorStatus) 
 	}
 }
 
+// authorize sendet einen AuthorizeRequest und wartet auf die Antwort.
+// Gibt true zurück wenn der Token akzeptiert wurde.
+func (s *Simulator) authorize(idToken string, tokenType types.IdTokenType) bool {
+	log.Printf("→ AuthorizeRequest: Token=%s Typ=%s", idToken, tokenType)
+
+	resp, err := s.cs.Authorize(idToken, tokenType)
+	if err != nil {
+		log.Printf("⚠️  AuthorizeRequest Fehler: %v", err)
+		return false
+	}
+
+	status := resp.IdTokenInfo.Status
+	if status == types.AuthorizationStatusAccepted {
+		log.Printf("✅ Token autorisiert: %s", idToken)
+		return true
+	}
+
+	log.Printf("❌ Token abgelehnt: %s (Status: %s)", idToken, status)
+	return false
+}
+
 func (s *Simulator) startTransaction(idToken string) {
 	s.mu.Lock()
 	if s.charging {
@@ -227,20 +237,32 @@ func (s *Simulator) startTransaction(idToken string) {
 		log.Printf("⚠️  Transaktion läuft bereits!")
 		return
 	}
+	s.mu.Unlock()
+
+	// ── Schritt 1: RFID autorisieren ──────────────────────────────────────
+	// In OCPP 2.0.1: Charging Station sendet Authorize BEVOR die Transaktion startet
+	if !s.authorize(idToken, types.IdTokenTypeISO14443) {
+		log.Printf("⚠️  Ladevorgang abgebrochen: Token nicht autorisiert")
+		return
+	}
+
+	// ── Schritt 2: Transaktion starten ────────────────────────────────────
+	s.mu.Lock()
 	s.txnID = fmt.Sprintf("TXN-%d", time.Now().Unix())
 	s.charging = true
-	s.power = s.maxCurrent * 230 * 3 // vereinfacht
+	s.power = s.maxCurrent * 230 * 3
+	s.lastToken = idToken
 	txnID := s.txnID
 	s.mu.Unlock()
 
 	// StatusNotification: Occupied
 	s.sendStatusNotification(availability.ConnectorStatusOccupied)
 
-	// TransactionEvent: Started
+	// TransactionEvent: Started (mit autorisiertem Token)
 	_, err := s.cs.TransactionEvent(
 		transactions.TransactionEventStarted,
 		types.NewDateTime(time.Now()),
-		transactions.TriggerReasonCablePluggedIn,
+		transactions.TriggerReasonAuthorized, // ← Authorized (nicht CablePluggedIn!)
 		s.nextSeq(),
 		transactions.Transaction{
 			TransactionID: txnID,
@@ -250,16 +272,19 @@ func (s *Simulator) startTransaction(idToken string) {
 			req.Evse = &types.EVSE{ID: evseID}
 			req.IDToken = &types.IdToken{
 				IdToken: idToken,
-				Type:    types.IdTokenTypeLocal,
+				Type:    types.IdTokenTypeISO14443, // ← echter RFID-Typ
 			}
 			req.MeterValue = []types.MeterValue{s.buildMeterValue()}
 		},
 	)
 	if err != nil {
 		log.Printf("TransactionEvent Started Fehler: %v", err)
+		s.mu.Lock()
+		s.charging = false
+		s.mu.Unlock()
 		return
 	}
-	log.Printf("→ Transaktion gestartet: %s", txnID)
+	log.Printf("→ Transaktion gestartet: %s (Token: %s)", txnID, idToken)
 
 	// Messwerte periodisch senden
 	go s.meterValueLoop()
@@ -273,11 +298,11 @@ func (s *Simulator) stopTransaction() {
 		return
 	}
 	txnID := s.txnID
+	token := s.lastToken
 	s.charging = false
 	s.power = 0
 	s.mu.Unlock()
 
-	// TransactionEvent: Ended
 	_, err := s.cs.TransactionEvent(
 		transactions.TransactionEventEnded,
 		types.NewDateTime(time.Now()),
@@ -296,19 +321,14 @@ func (s *Simulator) stopTransaction() {
 	if err != nil {
 		log.Printf("TransactionEvent Ended Fehler: %v", err)
 	} else {
-		log.Printf("→ Transaktion beendet: %s", txnID)
+		log.Printf("→ Transaktion beendet: %s (Token: %s)", txnID, token)
 	}
 
-	// StatusNotification: Available
 	s.sendStatusNotification(availability.ConnectorStatusAvailable)
 }
 
 func (s *Simulator) sendMeterValues() {
-	_, err := s.cs.MeterValues(
-		evseID,
-		[]types.MeterValue{s.buildMeterValue()},
-		// ← props-Funktion komplett weglassen!
-	)
+	_, err := s.cs.MeterValues(evseID, []types.MeterValue{s.buildMeterValue()})
 	if err != nil {
 		log.Printf("MeterValues Fehler: %v", err)
 	}
@@ -321,7 +341,6 @@ func (s *Simulator) buildMeterValue() types.MeterValue {
 	maxA := s.maxCurrent
 	s.mu.Unlock()
 
-	phaseA := maxA
 	multiplierZero := 0
 
 	return types.MeterValue{
@@ -346,7 +365,7 @@ func (s *Simulator) buildMeterValue() types.MeterValue {
 			{
 				Measurand: types.MeasurandCurrentImport,
 				Phase:     types.PhaseL1,
-				Value:     phaseA,
+				Value:     maxA,
 				UnitOfMeasure: &types.UnitOfMeasure{
 					Unit:       "A",
 					Multiplier: &multiplierZero,
@@ -371,9 +390,7 @@ func (s *Simulator) meterValueLoop() {
 		s.mu.Lock()
 		charging := s.charging
 		if charging {
-			// Energie akkumulieren
-			s.meterEnergy += s.power * 15 / 3600 // 15 Sekunden in Wh
-			// Leistung aus aktuellem Limit berechnen
+			s.meterEnergy += s.power * 15 / 3600
 			s.power = s.maxCurrent * 230 * 3
 		}
 		txnID := s.txnID
@@ -383,7 +400,6 @@ func (s *Simulator) meterValueLoop() {
 			return
 		}
 
-		// TransactionEvent: Updated mit Messwerten
 		s.cs.TransactionEvent(
 			transactions.TransactionEventUpdated,
 			types.NewDateTime(time.Now()),
@@ -411,35 +427,28 @@ func (s *Simulator) meterValueLoop() {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	sim := &Simulator{
-		maxCurrent: 16, // Start-Default
-	}
+	sim := &Simulator{maxCurrent: 16}
 
-	// ChargingStation erstellen
 	sim.cs = ocpp2.NewChargingStation(stationID, nil, nil)
 
-	// Handler registrieren
 	sim.cs.SetAvailabilityHandler(sim)
 	sim.cs.SetRemoteControlHandler(sim)
 	sim.cs.SetSmartChargingHandler(sim)
 	sim.cs.SetProvisioningHandler(sim)
 	sim.cs.SetDiagnosticsHandler(sim)
 
-	// Fehler-Channel loggen
 	go func() {
 		for err := range sim.cs.Errors() {
 			log.Printf("⚠️  OCPP Fehler: %v", err)
 		}
 	}()
 
-	// Mit CSMS verbinden
 	log.Printf("🔌 Verbinde mit CSMS: %s", csmsURL)
 	if err := sim.cs.Start(csmsURL); err != nil {
 		log.Fatalf("Verbindung fehlgeschlagen: %v", err)
 	}
 	log.Printf("✅ WebSocket verbunden!")
 
-	// BootNotification
 	resp, err := sim.cs.BootNotification(
 		provisioning.BootReasonPowerUp,
 		"P30-X",
@@ -454,27 +463,31 @@ func main() {
 	}
 	log.Printf("✅ BootNotification: Status=%s Interval=%ds", resp.Status, resp.Interval)
 
-	// StatusNotification: Available
 	sim.sendStatusNotification(availability.ConnectorStatusAvailable)
 
-	// Interaktives Menü
 	printMenu()
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		cmd := scanner.Text()
 		switch cmd {
 		case "1":
-			log.Printf("🚗 Fahrzeug wird angeschlossen...")
-			go sim.startTransaction("RFID-TEST-001")
+			token := rfidTokens["1"]
+			log.Printf("💳 RFID gescannt: %s", token)
+			go sim.startTransaction(token)
 		case "2":
+			token := rfidTokens["2"]
+			log.Printf("💳 RFID gescannt: %s", token)
+			go sim.startTransaction(token)
+		case "3":
 			log.Printf("🔌 Fahrzeug wird getrennt...")
 			go sim.stopTransaction()
-		case "3":
-			sim.mu.Lock()
-			log.Printf("📊 Status: charging=%v txn=%s limit=%.1fA power=%.0fW energy=%.1fWh",
-				sim.charging, sim.txnID, sim.maxCurrent, sim.power, sim.meterEnergy)
-			sim.mu.Unlock()
 		case "4":
+			sim.mu.Lock()
+			log.Printf("📊 Status: charging=%v txn=%s token=%s limit=%.1fA power=%.0fW energy=%.1fWh",
+				sim.charging, sim.txnID, sim.lastToken,
+				sim.maxCurrent, sim.power, sim.meterEnergy)
+			sim.mu.Unlock()
+		case "5":
 			sim.sendStatusNotification(availability.ConnectorStatusAvailable)
 		case "q":
 			log.Printf("👋 Simulator beendet.")
@@ -488,14 +501,15 @@ func main() {
 }
 
 func printMenu() {
-	fmt.Println("\n─────────────────────────────────")
+	fmt.Println("\n─────────────────────────────────────────────")
 	fmt.Println("  OCPP 2.0.1 KEBA Simulator")
-	fmt.Println("─────────────────────────────────")
-	fmt.Println("  1 = Fahrzeug anschließen (Transaktion starten)")
-	fmt.Println("  2 = Fahrzeug trennen (Transaktion beenden)")
-	fmt.Println("  3 = Status anzeigen")
-	fmt.Println("  4 = StatusNotification senden")
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Println("  1 = 💳 RFID-TEST-001 scannen + laden")
+	fmt.Println("  2 = 💳 RFID-TEST-002 scannen + laden")
+	fmt.Println("  3 = 🔌 Fahrzeug trennen (Transaktion beenden)")
+	fmt.Println("  4 = 📊 Status anzeigen")
+	fmt.Println("  5 = 📡 StatusNotification senden")
 	fmt.Println("  q = Beenden")
-	fmt.Println("─────────────────────────────────")
+	fmt.Println("─────────────────────────────────────────────")
 	fmt.Print("Befehl: ")
 }
