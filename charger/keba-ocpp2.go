@@ -125,9 +125,8 @@ func (wb *KebaOCPP2) setup(ctx context.Context, st *ocpp2pkg.Station, hasMeter b
 		implement.Has(wb, implement.PhaseCurrents(wb.evse.Currents))
 	}
 	implement.Has(wb, implement.CurrentGetter(wb.evse.GetMaxCurrent))
-	if wb.idTag != "" {
-		implement.Has(wb, implement.Identifier(wb.identify))
-	}
+	implement.Has(wb, implement.Identifier(wb.identify))
+	
 
 	st.MonitorReboot(ctx, func() error {
 		return wb.setup(ctx, st, hasMeter)
@@ -165,7 +164,19 @@ func (wb *KebaOCPP2) Status() (api.ChargeStatus, error) {
 }
 
 func (wb *KebaOCPP2) Enabled() (bool, error) {
-	return wb.enabled, nil
+    if wb.evse == nil {
+        return false, nil
+    }
+    txn, err := wb.evse.TransactionID()
+    if err != nil {
+        return false, err
+    }
+    // Wenn Transaktion läuft → enabled State synchronisieren
+    active := txn != ""
+    if active {
+        wb.enabled = true // ← State synchronisieren
+    }
+    return active || wb.enabled, nil
 }
 
 func (wb *KebaOCPP2) Enable(enable bool) error {
@@ -187,13 +198,12 @@ func (wb *KebaOCPP2) MaxCurrent(current int64) error {
 var _ api.ChargerEx = (*KebaOCPP2)(nil)
 
 func (wb *KebaOCPP2) MaxCurrentMillis(current float64) error {
-	if wb.enabled {
-		if err := wb.setTxDefaultProfile(current); err != nil {
-			return err
-		}
-	}
-	wb.current = current
-	return nil
+    wb.current = current
+    enabled, _ := wb.Enabled() // ← neu: Enabled() statt wb.enabled
+    if enabled {
+        return wb.setTxDefaultProfile(current)
+    }
+    return nil
 }
 
 // ── Private Helpers ───────────────────────────────────────────────────────────
