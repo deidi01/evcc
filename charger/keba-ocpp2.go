@@ -100,6 +100,10 @@ func (wb *KebaOCPP2) setup(ctx context.Context, st *ocpp2pkg.Station, hasMeter b
 		wb.log.INFO.Printf("station %s connected", wb.stationID)
 	}
 
+	// wb.st früh setzen damit setTxDefaultProfile() es nutzen kann.
+	// RegisterStation() setzt wb.st erst nach Rückkehr – zu spät!
+	wb.st = st // ← NEU
+
 	evse, err := ocpp2pkg.NewEVSE(ctx, wb.log, wb.evseID, st, wb.idTag, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to create evse %d: %w", wb.evseID, err)

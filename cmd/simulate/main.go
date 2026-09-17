@@ -21,7 +21,7 @@ import (
 // ── Konfiguration ─────────────────────────────────────────────────────────────
 
 const (
-	csmsURL   = "ws://192.168.42.7:8888/SIM001"
+	csmsURL   = "ws://127.0.0.1:8888"
 	stationID = "SIM001"
 	evseID    = 1
 	connID    = 1
