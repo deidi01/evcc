@@ -9,6 +9,7 @@ import (
 	"github.com/evcc-io/evcc/api/implement"
 	ocpp2pkg "github.com/evcc-io/evcc/charger/ocpp2"
 	"github.com/evcc-io/evcc/util"
+	"github.com/evcc-io/evcc/util/sponsor"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/availability"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/types"
 )
@@ -52,9 +53,9 @@ func NewKebaOCPP2FromConfig(ctx context.Context, other map[string]any) (api.Char
 }
 
 func NewKebaOCPP2(ctx context.Context, e embed, stationID string, evseID int, idTag string, hasMeter bool) (*KebaOCPP2, error) {
-	//	if !sponsor.IsAuthorized() {
-	//		return nil, api.ErrSponsorRequired
-	//	}
+	if !sponsor.IsAuthorized() {
+		return nil, api.ErrSponsorRequired
+	}
 
 	log := util.NewLogger("keba-ocpp2")
 
@@ -74,18 +75,26 @@ func NewKebaOCPP2(ctx context.Context, e embed, stationID string, evseID int, id
 		current:   6,
 	}
 
-	wb.st, err = cs.RegisterStation(
+	var st *ocpp2pkg.Station
+	st, err = cs.RegisterStation(
 		stationID,
 		func() *ocpp2pkg.Station {
 			return ocpp2pkg.NewStation(log, cs, stationID)
 		},
 		func(st *ocpp2pkg.Station) error {
-			return wb.setup(ctx, st, hasMeter)
+			// ← NEU: Setup in Goroutine – blockiert evcc-Start NICHT!
+			go func() {
+				if err := wb.setup(ctx, st, hasMeter); err != nil {
+					log.ERROR.Printf("setup failed: %v", err)
+				}
+			}()
+			return nil // ← sofort zurückkehren
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
+	wb.st = st
 
 	return wb, nil
 }
@@ -126,7 +135,6 @@ func (wb *KebaOCPP2) setup(ctx context.Context, st *ocpp2pkg.Station, hasMeter b
 	}
 	implement.Has(wb, implement.CurrentGetter(wb.evse.GetMaxCurrent))
 	implement.Has(wb, implement.Identifier(wb.identify))
-	
 
 	st.MonitorReboot(ctx, func() error {
 		return wb.setup(ctx, st, hasMeter)
@@ -164,19 +172,19 @@ func (wb *KebaOCPP2) Status() (api.ChargeStatus, error) {
 }
 
 func (wb *KebaOCPP2) Enabled() (bool, error) {
-    if wb.evse == nil {
-        return false, nil
-    }
-    txn, err := wb.evse.TransactionID()
-    if err != nil {
-        return false, err
-    }
-    // Wenn Transaktion läuft → enabled State synchronisieren
-    active := txn != ""
-    if active {
-        wb.enabled = true // ← State synchronisieren
-    }
-    return active || wb.enabled, nil
+	if wb.evse == nil {
+		return false, nil
+	}
+	txn, err := wb.evse.TransactionID()
+	if err != nil {
+		return false, err
+	}
+	// Wenn Transaktion läuft → enabled State synchronisieren
+	active := txn != ""
+	if active {
+		wb.enabled = true // ← State synchronisieren
+	}
+	return active || wb.enabled, nil
 }
 
 func (wb *KebaOCPP2) Enable(enable bool) error {
@@ -198,12 +206,12 @@ func (wb *KebaOCPP2) MaxCurrent(current int64) error {
 var _ api.ChargerEx = (*KebaOCPP2)(nil)
 
 func (wb *KebaOCPP2) MaxCurrentMillis(current float64) error {
-    wb.current = current
-    enabled, _ := wb.Enabled() // ← neu: Enabled() statt wb.enabled
-    if enabled {
-        return wb.setTxDefaultProfile(current)
-    }
-    return nil
+	wb.current = current
+	enabled, _ := wb.Enabled() // ← neu: Enabled() statt wb.enabled
+	if enabled {
+		return wb.setTxDefaultProfile(current)
+	}
+	return nil
 }
 
 // ── Private Helpers ───────────────────────────────────────────────────────────
