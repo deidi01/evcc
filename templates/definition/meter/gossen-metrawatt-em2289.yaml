@@ -34,8 +34,4 @@ render: |
       address: 300
       type: input
       decode: uint32s
-<<<<<<< HEAD
-    scale: 0.001
-=======
-    scale: 0.001
->>>>>>> d39cdabda (meter: add Gossen Metrawatt ENERGYMID EM2289 (#34171))
+      scale: 0.001
