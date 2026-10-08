@@ -4,19 +4,11 @@ products:
     description:
       generic: WPM 3/3i (SG Ready)
 group: heating
-<<<<<<< HEAD
-capabilities: ["meter", "dim"]
-requirements:
-  description:
-    de: Die SG Ready Steuerung über Modbus mit einem ISG funktioniert nur im Warmwasserbetrieb sowie im Automatik-/Programmbetrieb. Im Komfortbetrieb werden die SG Ready Befehle ignoriert.
-    en: SG Ready control via Modbus with the ISG only works in domestic hot water (DHW) mode and in automatic/programmed mode. In comfort mode, SG Ready commands are ignored.
-=======
 capabilities: ["dim"]
 requirements:
   description:
     de: Die SG Ready Steuerung über Modbus mit einem ISG funktioniert nur im Warmwasserbetrieb sowie im Automatik-/Programmbetrieb. Im Komfortbetrieb werden die SG Ready Befehle ignoriert. Der WPM 3/3i liefert keine Leistungsaufnahme über Modbus. Ohne zusätzlichen Zähler wird die Leistung aus dem Ladestrom geschätzt.
     en: SG Ready control via Modbus with the ISG only works in domestic hot water (DHW) mode and in automatic/programmed mode. In comfort mode, SG Ready commands are ignored. The WPM 3/3i does not provide power consumption via Modbus. Without an additional meter, power is estimated from the charge current.
->>>>>>> upstream/master
 #   evcc: ["sponsorship"]
 discovery:
   hostname: ["servicewelt*"]
